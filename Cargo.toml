@@ -10,3 +10,6 @@ description = "Task scheduling and work-plane contracts for Surgeist."
 [lib]
 name = "surgeist_task"
 path = "src/lib.rs"
+
+[dependencies]
+tokio = { version = "=1.48.0", features = ["rt-multi-thread", "sync", "time"] }

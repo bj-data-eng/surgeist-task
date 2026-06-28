@@ -19,6 +19,7 @@ mod lifecycle;
 mod policy;
 mod provenance;
 mod queue;
+mod runtime_tokio;
 mod scope;
 #[cfg(test)]
 mod testing;
@@ -52,6 +53,7 @@ pub use provenance::TaskProvenance;
 pub use queue::{
     DrainBudget, DrainReport, QueueError, QueueErrorCode, QueuePolicy, QueueReport, TaskEventQueue,
 };
+pub use runtime_tokio::TokioTaskExecutor;
 pub use scope::{TaskScope, TaskScopeError, TaskScopeErrorKind, TaskScopeSegment};
 
 #[cfg(test)]
