@@ -1273,6 +1273,37 @@ mod tests {
     }
 
     #[test]
+    fn fake_executor_emits_failed_to_cancel_for_cancelled_non_cancel_failure() {
+        let mut executor = FakeExecutor::<(), ()>::default();
+        let sink = RecordingTaskEventSink::new();
+        let token = CancellationToken::new();
+        let request = TaskSpawnRequest::new_unit(
+            TaskId::from_u64(9),
+            TaskAttemptId::from_u64(1),
+            TaskKey::try_new("cancel:failed-to-cancel").unwrap(),
+            TaskScope::app(),
+            token.clone(),
+            sink.handle(),
+            TaskRunnable::blocking_job(FailingTaskJob::new("failed after cancel")),
+        );
+
+        token.cancel(CancelReason::user_requested());
+        executor.spawn_task(request).unwrap();
+        let report = executor.drain_finished();
+        let cleared = executor.drain_finished();
+
+        assert_eq!(report.failed_to_cancel_tasks(), 1);
+        assert_eq!(report.failed_tasks(), 0);
+        assert_eq!(cleared.failed_to_cancel_tasks(), 0);
+        assert_eq!(
+            sink.terminal_lifecycle_events(),
+            vec![TaskLifecycleEvent::FailedToCancel]
+        );
+        assert_eq!(sink.diagnostics().len(), 1);
+        assert_eq!(sink.diagnostics()[0].message(), "failed after cancel");
+    }
+
+    #[test]
     fn fake_executor_drain_reports_completed_and_clears_count() {
         let mut executor = FakeExecutor::<(), ()>::default();
         let sink = RecordingTaskEventSink::new();

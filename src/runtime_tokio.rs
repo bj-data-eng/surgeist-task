@@ -274,6 +274,7 @@ enum TerminalOutcome {
     Completed,
     Failed(String),
     Cancelled,
+    FailedToCancel(String),
     FinishedAfterCancel,
 }
 
@@ -293,8 +294,16 @@ fn map_terminal_outcome(
         RunnableOutcome::Returned(Err(failure)) if failure.kind() == TaskFailureKind::Cancelled => {
             TerminalOutcome::Cancelled
         }
+        RunnableOutcome::Returned(Err(failure)) if cancellation_requested => {
+            TerminalOutcome::FailedToCancel(failure.message().to_owned())
+        }
         RunnableOutcome::Returned(Err(failure)) => {
             TerminalOutcome::Failed(failure.message().to_owned())
+        }
+        RunnableOutcome::Panicked(message) | RunnableOutcome::JoinFailed(message)
+            if cancellation_requested =>
+        {
+            TerminalOutcome::FailedToCancel(message)
         }
         RunnableOutcome::Panicked(message) | RunnableOutcome::JoinFailed(message) => {
             TerminalOutcome::Failed(message)
@@ -311,7 +320,7 @@ fn emit_terminal<Output>(
 ) where
     Output: Send + 'static,
 {
-    if let TerminalOutcome::Failed(message) = &outcome {
+    if let TerminalOutcome::Failed(message) | TerminalOutcome::FailedToCancel(message) = &outcome {
         let _ = event_sink.emit(TaskEvent::from_job_event(
             task_id,
             attempt_id,
@@ -331,6 +340,10 @@ fn emit_terminal<Output>(
         TerminalOutcome::Cancelled => {
             report.increment_cancelled_tasks();
             TaskEvent::cancelled(task_id, attempt_id)
+        }
+        TerminalOutcome::FailedToCancel(_) => {
+            report.increment_failed_to_cancel_tasks();
+            TaskEvent::failed_to_cancel(task_id, attempt_id)
         }
         TerminalOutcome::FinishedAfterCancel => {
             report.increment_finished_after_cancel_tasks();
@@ -530,6 +543,36 @@ mod tests {
     }
 
     #[test]
+    fn tokio_executor_emits_failed_to_cancel_for_cancelled_non_cancel_failure() {
+        let mut executor = TokioTaskExecutor::new().unwrap();
+        let token = CancellationToken::new();
+        let sink: RecordingTaskEventSink<()> = RecordingTaskEventSink::new();
+        let request = TaskSpawnRequest::new_unit(
+            TaskId::from_u64(8),
+            TaskAttemptId::from_u64(1),
+            TaskKey::try_new("tokio:failed-to-cancel").unwrap(),
+            TaskScope::app(),
+            token.clone(),
+            sink.handle(),
+            TaskRunnable::async_job(FailingAsyncTaskJob::new("failed after cancel")),
+        );
+
+        token.cancel(CancelReason::user_requested());
+        executor.spawn_task(request).unwrap();
+        let report =
+            drain_until_finished(&mut executor, |report| report.failed_to_cancel_tasks() >= 1);
+
+        assert_eq!(report.failed_to_cancel_tasks(), 1);
+        assert_eq!(report.failed_tasks(), 0);
+        assert_eq!(
+            sink.terminal_lifecycle_events(),
+            vec![TaskLifecycleEvent::FailedToCancel]
+        );
+        assert_eq!(sink.diagnostics().len(), 1);
+        assert_eq!(sink.diagnostics()[0].message(), "failed after cancel");
+    }
+
+    #[test]
     fn tokio_drain_finished_does_not_wait_for_unfinished_jobs() {
         let mut executor = TokioTaskExecutor::new().unwrap();
         let sink: RecordingTaskEventSink<()> = RecordingTaskEventSink::new();
@@ -630,6 +673,33 @@ mod tests {
             _context: TaskContext<Output>,
         ) -> Pin<Box<dyn Future<Output = Result<(), TaskFailure>> + Send + 'static>> {
             Box::pin(async { Err(TaskFailure::cancelled("task cancelled cooperatively")) })
+        }
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct FailingAsyncTaskJob {
+        message: String,
+    }
+
+    impl FailingAsyncTaskJob {
+        fn new(message: impl Into<String>) -> Self {
+            Self {
+                message: message.into(),
+            }
+        }
+    }
+
+    impl<Input, Output> AsyncTaskJob<Input, Output> for FailingAsyncTaskJob
+    where
+        Input: Send + 'static,
+        Output: Send + 'static,
+    {
+        fn run(
+            self: Box<Self>,
+            _input: Input,
+            _context: TaskContext<Output>,
+        ) -> Pin<Box<dyn Future<Output = Result<(), TaskFailure>> + Send + 'static>> {
+            Box::pin(async move { Err(TaskFailure::failed(self.message)) })
         }
     }
 

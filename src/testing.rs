@@ -396,6 +396,7 @@ enum TerminalOutcome {
     Completed,
     Failed(String),
     Cancelled,
+    FailedToCancel(String),
     FinishedAfterCancel,
 }
 
@@ -464,8 +465,14 @@ fn map_terminal_outcome(
         RunnableOutcome::Returned(Err(failure)) if failure.kind() == TaskFailureKind::Cancelled => {
             TerminalOutcome::Cancelled
         }
+        RunnableOutcome::Returned(Err(failure)) if cancellation.is_cancelled() => {
+            TerminalOutcome::FailedToCancel(failure.message().to_owned())
+        }
         RunnableOutcome::Returned(Err(failure)) => {
             TerminalOutcome::Failed(failure.message().to_owned())
+        }
+        RunnableOutcome::Panicked(message) if cancellation.is_cancelled() => {
+            TerminalOutcome::FailedToCancel(message)
         }
         RunnableOutcome::Panicked(message) => TerminalOutcome::Failed(message),
     }
@@ -481,7 +488,7 @@ fn emit_terminal<Output>(
 where
     Output: Send + 'static,
 {
-    if let TerminalOutcome::Failed(message) = &outcome {
+    if let TerminalOutcome::Failed(message) | TerminalOutcome::FailedToCancel(message) = &outcome {
         event_sink
             .emit(TaskEvent::from_job_event(
                 task_id,
@@ -509,6 +516,10 @@ where
         TerminalOutcome::Cancelled => {
             finished.increment_cancelled_tasks();
             TaskEvent::cancelled(task_id, attempt_id)
+        }
+        TerminalOutcome::FailedToCancel(_) => {
+            finished.increment_failed_to_cancel_tasks();
+            TaskEvent::failed_to_cancel(task_id, attempt_id)
         }
         TerminalOutcome::FinishedAfterCancel => {
             finished.increment_finished_after_cancel_tasks();
