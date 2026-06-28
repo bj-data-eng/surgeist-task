@@ -15,11 +15,13 @@ use std::{
 };
 
 use crate::{
-    BlockingPolicy, BlockingTaskJob, CancelReason, CancellationToken, ExecutorDrainReport,
-    ExecutorError, ExecutorTaskHandle, TaskAttemptId, TaskContext, TaskDiagnosticEvent,
-    TaskDiagnosticLevel, TaskEvent, TaskEventKind, TaskEventSink, TaskEventSinkError, TaskExecutor,
-    TaskFailure, TaskFailureKind, TaskHandle, TaskId, TaskJobEvent, TaskKey, TaskLifecycleEvent,
-    TaskPolicy, TaskRunnable, TaskScope, TaskSpawnRequest,
+    BlockingPolicy, BlockingTaskJob, CancelReason, CancellationToken, CoalescingKey, DrainBudget,
+    DrainReport, ExecutorDrainReport, ExecutorError, ExecutorTaskHandle, ObservationChange,
+    ObserverId, QueueError, QueuePolicy, TaskAttemptId, TaskContext, TaskCoordination,
+    TaskDiagnosticEvent, TaskDiagnosticLevel, TaskEvent, TaskEventKind, TaskEventQueue,
+    TaskEventSink, TaskEventSinkError, TaskExecutor, TaskFailure, TaskFailureKind, TaskHandle,
+    TaskId, TaskJobEvent, TaskKey, TaskLifecycleEvent, TaskPolicy, TaskRecord, TaskRunnable,
+    TaskScope, TaskSnapshot, TaskSpawnRequest,
 };
 
 #[derive(Debug)]
@@ -521,4 +523,257 @@ where
         ))
         .with_task_attempt(task_id, attempt_id)
     })
+}
+
+pub struct TaskPrototypeHarness {
+    record: TaskRecord,
+    coordination: TaskCoordination,
+    queue: TaskEventQueue<String>,
+    stale_events: usize,
+}
+
+impl TaskPrototypeHarness {
+    pub fn latest_wins() -> Self {
+        Self::new(
+            TaskKey::try_new("latest-wins").expect("static task key is valid"),
+            TaskPolicy::continue_when_unobserved(),
+        )
+    }
+
+    pub fn progress_flood() -> Self {
+        let mut harness = Self::new(
+            TaskKey::try_new("progress-flood").expect("static task key is valid"),
+            TaskPolicy::continue_when_unobserved(),
+        );
+        harness.start_attempt(TaskAttemptId::from_u64(1));
+        harness
+    }
+
+    pub fn non_abortable_import() -> Self {
+        Self::new(
+            TaskKey::try_new("import:non-abortable").expect("static task key is valid"),
+            TaskPolicy::continue_when_unobserved()
+                .with_blocking_policy(BlockingPolicy::NonAbortableReportCancelling),
+        )
+    }
+
+    pub fn shared_observers() -> Self {
+        Self::new(
+            TaskKey::try_new("compile:main").expect("static task key is valid"),
+            TaskPolicy::cancel_when_unobserved(),
+        )
+    }
+
+    pub fn start_attempt(&mut self, attempt_id: TaskAttemptId) {
+        self.record
+            .start_attempt(attempt_id)
+            .expect("prototype attempt should start");
+        self.record
+            .mark_running(attempt_id)
+            .expect("prototype attempt should run");
+    }
+
+    pub fn complete_attempt(&mut self, attempt_id: TaskAttemptId, output: String) {
+        if !self.record.accepts_attempt(attempt_id) {
+            self.stale_events += 1;
+            return;
+        }
+
+        let output_key = TaskKey::try_new(format!("latest-output:{output}"))
+            .expect("prototype output key should be valid");
+        let mut record = TaskRecord::queued(
+            self.record.id(),
+            output_key,
+            self.record.scope().clone(),
+            self.record.policy().clone(),
+        );
+        record
+            .start_attempt(attempt_id)
+            .expect("prototype completion attempt should start");
+        record
+            .mark_running(attempt_id)
+            .expect("prototype completion attempt should run");
+        record
+            .complete(attempt_id)
+            .expect("prototype completion attempt should complete");
+        self.record = record;
+
+        self.queue
+            .push(TaskEvent::from_job_event(
+                self.record.id(),
+                attempt_id,
+                TaskJobEvent::output(output),
+            ))
+            .expect("prototype queue has capacity for output");
+        self.queue
+            .push(TaskEvent::completed(self.record.id(), attempt_id))
+            .expect("prototype queue has capacity for completion");
+    }
+
+    pub fn cancel(&mut self, reason: CancelReason) {
+        self.record.request_cancel(reason);
+    }
+
+    pub fn finish_after_cancel(&mut self) {
+        let attempt_id = self
+            .record
+            .attempt_id()
+            .expect("prototype attempt should be present");
+        self.record
+            .finish_after_cancel(attempt_id)
+            .expect("prototype attempt should finish after cancel");
+    }
+
+    pub fn observe(&mut self, key: TaskKey, observer: ObserverId) {
+        self.coordination.observe(key.clone(), observer);
+        self.record
+            .sync_observer_count(self.coordination.snapshot_count(&key));
+    }
+
+    pub fn unobserve(
+        &mut self,
+        key: &TaskKey,
+        observer: &ObserverId,
+        policy: &TaskPolicy,
+    ) -> ObservationChange {
+        let change = self.coordination.unobserve(key, observer, policy);
+        self.record
+            .sync_observer_count(self.coordination.snapshot_count(key));
+        change
+    }
+
+    pub fn observer_count(&self, key: &TaskKey) -> usize {
+        self.coordination.observer_count(key)
+    }
+
+    pub fn is_observed(&self, key: &TaskKey) -> bool {
+        self.coordination.is_observed(key)
+    }
+
+    pub fn enqueue_progress(
+        &mut self,
+        key: CoalescingKey,
+        message: String,
+    ) -> Result<(), QueueError> {
+        let attempt_id = self
+            .record
+            .attempt_id()
+            .expect("prototype attempt should be present");
+        self.queue.push(TaskEvent::from_job_event(
+            self.record.id(),
+            attempt_id,
+            TaskJobEvent::progress_message(key, message),
+        ))
+    }
+
+    pub fn drain(&mut self, budget: DrainBudget) -> DrainReport<String> {
+        self.queue.drain(budget)
+    }
+
+    pub fn snapshot(&self) -> TaskSnapshot {
+        self.record.snapshot()
+    }
+
+    pub fn latest_output(&self) -> Option<&str> {
+        self.record.key().as_str().strip_prefix("latest-output:")
+    }
+
+    pub const fn stale_events(&self) -> usize {
+        self.stale_events
+    }
+
+    fn new(key: TaskKey, policy: TaskPolicy) -> Self {
+        Self {
+            record: TaskRecord::queued(TaskId::from_u64(1), key, TaskScope::app(), policy),
+            coordination: TaskCoordination::default(),
+            queue: TaskEventQueue::new(QueuePolicy::bounded(256)),
+            stale_events: 0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        CancelReason, CoalescingKey, DrainBudget, ObserverId, TaskAttemptId, TaskKey, TaskPolicy,
+        TaskProgressValue, TaskStatus,
+    };
+
+    use super::TaskPrototypeHarness;
+
+    #[test]
+    fn prototype_latest_wins_rejects_stale_completion() {
+        let mut harness = TaskPrototypeHarness::latest_wins();
+
+        harness.start_attempt(TaskAttemptId::from_u64(1));
+        harness.start_attempt(TaskAttemptId::from_u64(2));
+        harness.complete_attempt(TaskAttemptId::from_u64(1), "old".to_owned());
+        harness.complete_attempt(TaskAttemptId::from_u64(2), "new".to_owned());
+        harness.drain(DrainBudget::new().max_events(8));
+
+        assert_eq!(harness.latest_output(), Some("new"));
+        assert_eq!(harness.stale_events(), 1);
+        assert_eq!(harness.snapshot().status(), TaskStatus::Completed);
+    }
+
+    #[test]
+    fn prototype_progress_flood_coalesces_and_drains_by_budget() {
+        let mut harness = TaskPrototypeHarness::progress_flood();
+
+        for index in 0..10_000 {
+            harness
+                .enqueue_progress(CoalescingKey::try_new("rows").unwrap(), index.to_string())
+                .unwrap();
+        }
+
+        let drained = harness.drain(DrainBudget::new().max_events(128));
+
+        assert_eq!(drained.events().len(), 1);
+        assert_eq!(
+            drained.events()[0].progress_value(),
+            Some(&TaskProgressValue::message("9999"))
+        );
+        assert_eq!(drained.coalesced_events(), 9_999);
+    }
+
+    #[test]
+    fn prototype_non_abortable_import_reports_cancelling_until_finished_after_cancel() {
+        let mut harness = TaskPrototypeHarness::non_abortable_import();
+
+        harness.start_attempt(TaskAttemptId::from_u64(1));
+        harness.cancel(CancelReason::user_requested());
+
+        assert_eq!(harness.snapshot().status(), TaskStatus::Cancelling);
+
+        harness.finish_after_cancel();
+
+        assert_eq!(harness.snapshot().status(), TaskStatus::FinishedAfterCancel);
+        assert!(harness.snapshot().is_terminal());
+    }
+
+    #[test]
+    fn prototype_two_observers_share_one_task_until_last_observer_detaches() {
+        let mut harness = TaskPrototypeHarness::shared_observers();
+        let key = TaskKey::try_new("compile:main").unwrap();
+
+        harness.observe(key.clone(), ObserverId::try_new("left").unwrap());
+        harness.observe(key.clone(), ObserverId::try_new("right").unwrap());
+        assert_eq!(harness.observer_count(&key), 2);
+
+        harness.unobserve(
+            &key,
+            &ObserverId::try_new("left").unwrap(),
+            &TaskPolicy::cancel_when_unobserved(),
+        );
+        assert_eq!(harness.observer_count(&key), 1);
+        assert!(harness.is_observed(&key));
+
+        harness.unobserve(
+            &key,
+            &ObserverId::try_new("right").unwrap(),
+            &TaskPolicy::cancel_when_unobserved(),
+        );
+        assert_eq!(harness.observer_count(&key), 0);
+        assert!(!harness.is_observed(&key));
+    }
 }
