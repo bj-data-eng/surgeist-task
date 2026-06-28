@@ -11,13 +11,20 @@
 pub const CRATE_NAME: &str = "surgeist-task";
 
 mod cancel;
+mod event;
 mod id;
 mod lifecycle;
 mod policy;
 mod provenance;
+mod queue;
 mod scope;
 
 pub use cancel::{CancelReason, CancelReasonKind, CancellationToken, CancellationView};
+pub use event::{
+    PercentComplete, PercentCompleteError, PercentCompleteErrorKind, TaskDiagnosticEvent,
+    TaskDiagnosticLevel, TaskEvent, TaskEventKind, TaskJobEvent, TaskLifecycleEvent,
+    TaskOutputEvent, TaskProgressEvent, TaskProgressValue,
+};
 pub use id::{
     CoalescingKey, CorrelationId, ObserverId, ResourceClassId, TaskAttemptId, TaskId, TaskIdError,
     TaskIdErrorKind, TaskKey, TaskName,
@@ -28,6 +35,9 @@ pub use lifecycle::{
 };
 pub use policy::{BlockingPolicy, RetryPolicy, TaskPolicy, TaskPriority, UnobservedPolicy};
 pub use provenance::TaskProvenance;
+pub use queue::{
+    DrainBudget, DrainReport, QueueError, QueueErrorCode, QueuePolicy, QueueReport, TaskEventQueue,
+};
 pub use scope::{TaskScope, TaskScopeError, TaskScopeErrorKind, TaskScopeSegment};
 
 #[cfg(test)]
