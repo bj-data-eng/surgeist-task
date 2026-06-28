@@ -10,6 +10,17 @@
 /// Crate identity string used by smoke tests and API artifacts.
 pub const CRATE_NAME: &str = "surgeist-task";
 
+mod id;
+mod provenance;
+mod scope;
+
+pub use id::{
+    CoalescingKey, CorrelationId, ObserverId, ResourceClassId, TaskAttemptId, TaskId, TaskIdError,
+    TaskIdErrorKind, TaskKey, TaskName,
+};
+pub use provenance::TaskProvenance;
+pub use scope::{TaskScope, TaskScopeError, TaskScopeErrorKind, TaskScopeSegment};
+
 #[cfg(test)]
 mod tests {
     use super::CRATE_NAME;
