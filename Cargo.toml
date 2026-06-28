@@ -1,0 +1,12 @@
+[package]
+name = "surgeist-task"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/bj-data-eng/surgeist-task"
+readme = "README.md"
+description = "Task scheduling and work-plane contracts for Surgeist."
+
+[lib]
+name = "surgeist_task"
+path = "src/lib.rs"
