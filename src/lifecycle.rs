@@ -1,5 +1,6 @@
 use crate::{
-    CancelReason, CancellationToken, TaskAttemptId, TaskId, TaskKey, TaskPolicy, TaskScope,
+    CancelReason, CancellationToken, ObserverCountSnapshot, TaskAttemptId, TaskId, TaskKey,
+    TaskPolicy, TaskScope,
 };
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -190,6 +191,12 @@ impl TaskRecord {
         self.observer_count
     }
 
+    pub(crate) fn sync_observer_count(&mut self, snapshot: ObserverCountSnapshot) {
+        if snapshot.key() == &self.key {
+            self.observer_count = snapshot.count();
+        }
+    }
+
     pub fn accepts_attempt(&self, attempt_id: TaskAttemptId) -> bool {
         !self.status.is_terminal() && self.attempt_id == Some(attempt_id)
     }
@@ -239,6 +246,8 @@ impl TaskRecord {
         }
     }
 }
+
+const _: fn(&mut TaskRecord, ObserverCountSnapshot) = TaskRecord::sync_observer_count;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TaskLifecycleErrorKind {
@@ -422,5 +431,23 @@ mod tests {
         assert_eq!(record.status(), TaskStatus::Completed);
         assert_eq!(record.cancel_reason(), None);
         assert_eq!(record.snapshot(), snapshot);
+    }
+
+    #[test]
+    fn sync_observer_count_only_updates_matching_task_key() {
+        let key = TaskKey::try_new("index:docs").unwrap();
+        let mut record = TaskRecord::queued(
+            TaskId::from_u64(5),
+            key.clone(),
+            TaskScope::app(),
+            TaskPolicy::continue_when_unobserved(),
+        );
+
+        record.sync_observer_count(crate::ObserverCountSnapshot::new(key, 3));
+        assert_eq!(record.observer_count(), 3);
+
+        let other_key = TaskKey::try_new("index:other").unwrap();
+        record.sync_observer_count(crate::ObserverCountSnapshot::new(other_key, 9));
+        assert_eq!(record.observer_count(), 3);
     }
 }

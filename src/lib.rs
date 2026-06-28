@@ -11,6 +11,7 @@
 pub const CRATE_NAME: &str = "surgeist-task";
 
 mod cancel;
+mod coordination;
 mod event;
 mod id;
 mod lifecycle;
@@ -20,6 +21,10 @@ mod queue;
 mod scope;
 
 pub use cancel::{CancelReason, CancelReasonKind, CancellationToken, CancellationView};
+pub use coordination::{
+    ObservationChange, ObserverCountSnapshot, TaskCoordination, TaskRegistration,
+    TaskRegistrationError, TaskRegistrationErrorKind,
+};
 pub use event::{
     PercentComplete, PercentCompleteError, PercentCompleteErrorKind, TaskDiagnosticEvent,
     TaskDiagnosticLevel, TaskEvent, TaskEventKind, TaskJobEvent, TaskLifecycleEvent,
