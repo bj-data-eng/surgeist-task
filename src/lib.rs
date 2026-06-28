@@ -10,14 +10,23 @@
 /// Crate identity string used by smoke tests and API artifacts.
 pub const CRATE_NAME: &str = "surgeist-task";
 
+mod cancel;
 mod id;
+mod lifecycle;
+mod policy;
 mod provenance;
 mod scope;
 
+pub use cancel::{CancelReason, CancelReasonKind, CancellationToken, CancellationView};
 pub use id::{
     CoalescingKey, CorrelationId, ObserverId, ResourceClassId, TaskAttemptId, TaskId, TaskIdError,
     TaskIdErrorKind, TaskKey, TaskName,
 };
+pub use lifecycle::{
+    TaskLifecycleError, TaskLifecycleErrorKind, TaskRecord, TaskSnapshot, TaskStatus,
+    TaskTerminalStatus,
+};
+pub use policy::{BlockingPolicy, RetryPolicy, TaskPolicy, TaskPriority, UnobservedPolicy};
 pub use provenance::TaskProvenance;
 pub use scope::{TaskScope, TaskScopeError, TaskScopeErrorKind, TaskScopeSegment};
 
