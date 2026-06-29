@@ -72,21 +72,6 @@ contracts. App and task authors should depend on `TaskExecutor`,
 `TaskSpawnRequest`, `TaskContext`, `TaskEventSink`, and task event types rather
 than Tokio-specific runtime details.
 
-## API Artifacts
-
-The committed API coordination artifact lives at `api/public-api.txt`. The root
-Surgeist repository owns source-derived API artifact refresh. Do not copy or
-provision `api/generator` in this crate, and do not hand-edit generated API
-output.
-
-When root integration needs to refresh this crate's artifact, run the
-root-owned generator workflow from the root repo after it updates the
-`surgeist-task` pointer and facade wiring. The current root command shape is:
-
-```sh
-cargo run --manifest-path api/generator/Cargo.toml -- --crate surgeist-task
-```
-
 ## Baseline Checks
 
 Run these before handing off crate-local task subsystem work:
